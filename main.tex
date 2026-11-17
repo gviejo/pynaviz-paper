@@ -1,0 +1,289 @@
+\documentclass[11pt]{article}
+
+% ---------------------------------------------------------------------------
+% Packages
+% ---------------------------------------------------------------------------
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=1in]{geometry}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{authblk}
+\usepackage[numbers,sort&compress]{natbib}
+\usepackage{hyperref}
+\usepackage{cleveref}
+\usepackage{lineno}
+\linenumbers
+
+\hypersetup{colorlinks=true, linkcolor=blue!60!black, citecolor=blue!60!black, urlcolor=blue!60!black}
+
+% Inline notes for drafting
+\newcommand{\todo}[1]{\textcolor{red}{\textbf{[TODO: #1]}}}
+
+% Placeholder figure box until real figures exist
+\newcommand{\placeholderfig}[2]{%
+  \fbox{\parbox[c][#2][c]{0.95\linewidth}{\centering\textit{#1}}}}
+
+\lstset{
+  language=Python,
+  basicstyle=\ttfamily\small,
+  keywordstyle=\color{blue!60!black}\bfseries,
+  commentstyle=\color{gray}\itshape,
+  stringstyle=\color{green!40!black},
+  frame=single,
+  breaklines=true,
+  columns=fullflexible,
+  showstringspaces=false,
+}
+
+\newcommand{\pynaviz}{\texttt{pynaviz}}
+\newcommand{\pynapple}{\texttt{pynapple}}
+
+% ---------------------------------------------------------------------------
+% Title / authors
+% ---------------------------------------------------------------------------
+\title{Pynaviz: GPU-accelerated, synchronized visualization of neural and behavioral time series in Python}
+
+\author[1]{Edoardo Balzani}
+\author[1]{Guillaume Viejo}
+\author{\todo{other authors and order}}
+\affil[1]{\todo{Affiliation}}
+
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+% ---------------------------------------------------------------------------
+\begin{abstract}
+Modern systems neuroscience experiments routinely combine high-channel-count
+electrophysiology or imaging with high-frame-rate behavioral video and
+pose-estimation outputs. Exploring these heterogeneous streams together, at
+their native resolution and on a common time axis, remains a practical
+bottleneck: general-purpose plotting libraries are not designed for
+interactive navigation of hours-long recordings, while dedicated viewers are
+often tied to a single data modality or file format. Here we present
+\pynaviz{}, an open-source Python package for interactive, GPU-accelerated
+visualization of neurophysiological and behavioral data. \pynaviz{} is built
+on the \pynapple{} data model \citep{viejo2023pynapple} and on the
+WebGPU-based rendering engine \texttt{pygfx}, and provides one visual per
+\pynapple{} object (\texttt{Tsd}, \texttt{TsdFrame}, \texttt{TsdTensor},
+\texttt{TsGroup}, \texttt{Ts}, \texttt{IntervalSet}) as well as
+frame-accurate video playback. Any number of views can be synchronized in
+time, so that panning in a raw LFP trace, a spike raster or a pose trajectory
+moves the corresponding video frame and vice versa. Large datasets are
+streamed from disk on demand, metadata can be used to sort, group and color
+signals interactively, and complete workspaces can be saved and restored. \pynaviz{}
+can be used from a script or notebook, as a standalone desktop application
+launched from the command line on NWB, video or raw electrophysiology files,
+or embedded in custom Qt applications.
+\todo{one sentence on validation / benchmark results.}
+\end{abstract}
+
+% ---------------------------------------------------------------------------
+\section{Introduction}
+\label{sec:intro}
+
+\todo{Motivation paragraph.} Visual inspection of raw data is a necessary
+step in every neurophysiology pipeline: checking spike sorting against the
+raw signal, verifying the alignment of behavioral events, identifying
+artifacts, or simply building intuition before quantitative analysis.
+Recordings now routinely span hundreds to thousands of channels
+\citep{jun2017neuropixels,steinmetz2021neuropixels}, are paired with one or
+several high-speed cameras, and are augmented by markerless pose-estimation
+\citep{mathis2018deeplabcut,pereira2022sleap}. The resulting datasets are
+heterogeneous in sampling rate, dimensionality and storage format.
+
+\todo{Gap paragraph.} Static plotting libraries such as Matplotlib
+\citep{hunter2007matplotlib} are ill-suited for interactive browsing of long
+recordings. Several interactive tools exist (e.g.\ Neuroscope
+\citep{hazan2006klusters}, ephyviewer, napari \citep{napari}, fastplotlib,
+SpikeInterface GUIs \citep{buccino2020spikeinterface}) but are generally
+tied to a specific data type (continuous signals, images, or spikes) or a
+specific file format, and do not offer native, frame-accurate synchronization
+between neural signals and behavioral video. \todo{Refine comparison; add
+table?}
+
+\todo{Contribution paragraph.} We introduce \pynaviz{}, which closes this gap
+by (i) mapping each core \pynapple{} object to a dedicated GPU-rendered
+visual, (ii) synchronizing an arbitrary number of visuals on a shared time
+axis, including video, and (iii) exposing the same functionality through a
+Python API, a Qt desktop application and a command-line entry point.
+
+% ---------------------------------------------------------------------------
+\section{Design and implementation}
+\label{sec:design}
+
+\subsection{Data model}
+\pynaviz{} adopts the data model of \pynapple{} \citep{viejo2023pynapple}:
+timestamps (\texttt{Ts}), univariate (\texttt{Tsd}), multivariate
+(\texttt{TsdFrame}) and tensor-valued (\texttt{TsdTensor}) time series,
+collections of point processes (\texttt{TsGroup}) and sets of epochs
+(\texttt{IntervalSet}). Metadata attached to these objects (e.g.\ brain
+region, cell type, channel depth) is directly accessible to the visuals.
+Because \pynapple{} reads NWB files \citep{rubel2022nwb} and, through Neo
+\citep{garcia2014neo}, most raw electrophysiology formats, \pynaviz{}
+inherits this I/O layer without additional code.
+
+\Cref{tab:visuals} lists the visual associated with each object.
+
+\begin{table}[h]
+\centering
+\caption{Mapping between \pynapple{} objects and \pynaviz{} visuals.}
+\label{tab:visuals}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Object & Visual & Display modes \\
+\midrule
+\texttt{Tsd}         & \texttt{PlotTsd}         & line \\
+\texttt{TsdFrame}    & \texttt{PlotTsdFrame}    & stacked lines, heat map, $x$ vs.\ $y$ \\
+\texttt{TsdTensor}   & \texttt{PlotTsdTensor}   & image sequence \\
+\texttt{TsGroup}     & \texttt{PlotTsGroup}     & raster \\
+\texttt{Ts}          & \texttt{PlotTs}          & event markers \\
+\texttt{IntervalSet} & \texttt{PlotIntervalSet} & shaded epochs / overlay \\
+Video file           & \texttt{PlotVideo}       & frames (+ skeleton overlay) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{GPU rendering}
+All visuals are rendered with \texttt{pygfx}, a Python rendering engine built
+on WebGPU (\texttt{wgpu-py}). Data are uploaded once to GPU buffers and
+navigation (pan, zoom) is implemented as camera transformations, so that
+interaction cost is largely independent of the number of samples on screen.
+\todo{Describe buffer layout for TsdFrame / TsGroup, line vs.\ image modes.}
+
+\subsection{Time synchronization}
+Each visual owns a \emph{controller} that translates user input into camera
+updates. Controllers are registered to a \texttt{ControllerGroup}, which
+broadcasts synchronization events (pan, zoom, go-to-time) to all other
+members. Time-series visuals use span controllers that preserve the visible
+time window, whereas video and tensor visuals use a frame controller that
+maps the current time to the nearest frame. Synchronization rules are
+modular, allowing views with different units or aspect ratios to follow the
+same time axis. \todo{Figure: architecture diagram.}
+
+\subsection{Streaming large datasets}
+For memory-mapped or lazily loaded continuous data (e.g.\ raw wide-band
+recordings), \pynaviz{} streams a fixed-size window around the current view
+position rather than loading the full array. The window is refreshed as the
+user pans or zooms, keeping GPU memory bounded. \todo{Numbers.}
+
+\subsection{Video decoding}
+Video is decoded with PyAV (FFmpeg bindings). A background thread builds an
+index of keyframe presentation timestamps at load time, enabling
+frame-accurate random seeks, while a frame buffer amortizes sequential
+playback. Video timestamps can be provided explicitly, so that
+camera frames align with the neural clock. Pose-estimation outputs (e.g.\
+DeepLabCut, SLEAP) can be overlaid as skeletons on top of the video.
+\todo{Seek latency benchmark.}
+
+\subsection{Metadata-driven interaction}
+Visuals expose \texttt{sort\_by}, \texttt{group\_by} and \texttt{color\_by}
+operations driven by object metadata, available both programmatically and
+from the GUI. \texttt{IntervalSet} objects can be superimposed on any
+time-series visual and used to jump between epochs (e.g.\ trials, sleep
+states).
+
+\subsection{User interfaces}
+\pynaviz{} can be used at three levels:
+\begin{enumerate}
+  \item \textbf{Python API.} Individual visuals (\texttt{PlotTsd}, \ldots)
+        rendered in a standalone window or a Jupyter notebook.
+  \item \textbf{Qt application.} The \texttt{scope} function opens a
+        dockable multi-panel window in which variables from a dictionary, a
+        namespace, an NWB file or a raw recording can be added, arranged and
+        synchronized. Layouts are serialized to JSON and can be restored.
+  \item \textbf{Command line.} \texttt{pynaviz [files] [-l layout.json]}
+        opens the same application directly on NWB, NPZ, video or raw
+        electrophysiology files.
+\end{enumerate}
+
+\begin{lstlisting}[caption={Minimal example.},label={lst:example}]
+import pynapple as nap
+from pynaviz import scope
+
+data = nap.load_file("session.nwb")
+scope({"lfp": data["lfp"], "units": data["units"],
+       "video": "camera.mp4"})
+\end{lstlisting}
+
+\begin{figure}[t]
+\centering
+\placeholderfig{Figure 1: overview of the \pynaviz{} Qt application with
+synchronized LFP, spike raster, epochs and video.}{6cm}
+\caption{\todo{Overview figure.}}
+\label{fig:overview}
+\end{figure}
+
+% ---------------------------------------------------------------------------
+\section{Use cases}
+\label{sec:usecases}
+
+\subsection{Head-direction cells and behavior}
+\todo{Spike raster sorted by preferred direction, synchronized with head
+angle and tuning curves. Based on \texttt{docs/examples/example\_head\_direction.py}.}
+
+\subsection{Raw LFP and sleep states}
+\todo{Wide-band streaming, IntervalSet overlay of sleep/wake epochs. Based on
+\texttt{example\_lfp.py}.}
+
+\subsection{Pose estimation and video}
+\todo{DeepLabCut output overlaid on video, $x$ vs.\ $y$ trajectory view.
+Based on \texttt{example\_dlc\_pose.py}.}
+
+\subsection{Trial-based experiments}
+\todo{Jumping between trials, multi-camera playback. Based on
+\texttt{example\_trials.py} and \texttt{example\_videos.py}.}
+
+\begin{figure}[t]
+\centering
+\placeholderfig{Figure 2: use-case panels A--D.}{8cm}
+\caption{\todo{Use cases.}}
+\label{fig:usecases}
+\end{figure}
+
+% ---------------------------------------------------------------------------
+\section{Performance}
+\label{sec:performance}
+\todo{Benchmarks: frame rate vs.\ number of channels / samples on screen;
+video seek latency; memory footprint with streaming; comparison with
+Matplotlib / other viewers. Hardware description.}
+
+\begin{figure}[t]
+\centering
+\placeholderfig{Figure 3: benchmarks.}{5cm}
+\caption{\todo{Performance.}}
+\label{fig:benchmarks}
+\end{figure}
+
+% ---------------------------------------------------------------------------
+\section{Discussion}
+\label{sec:discussion}
+\todo{Summary; limitations (e.g.\ GPU requirement, Qt dependency for full
+GUI); relation to the \pynapple{} ecosystem; future work (e.g.\ web/remote
+rendering, 3D visuals, plugin system, tighter integration with analysis
+outputs such as decoding).}
+
+% ---------------------------------------------------------------------------
+\section*{Code availability}
+\pynaviz{} is open source and available at
+\url{https://github.com/pynapple-org/pynaviz}, installable via
+\texttt{pip install pynaviz[qt]}. Documentation is hosted at
+\url{https://pynaviz.readthedocs.io}. \todo{License, version used, Zenodo DOI.}
+
+\section*{Acknowledgments}
+\todo{Funding, pygfx developers.}
+
+\section*{Author contributions}
+\todo{CRediT.}
+
+\bibliographystyle{unsrtnat}
+\bibliography{references}
+
+\end{document}
